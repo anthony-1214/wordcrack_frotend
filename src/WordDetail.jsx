@@ -1,116 +1,153 @@
-import React, { useState } from "react";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import React, { useEffect, useState } from "react";
 
-function WordDetail({ item }) {
-  const [aiExample, setAiExample] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [favorites, setFavorites] = useState(() => {
-    return JSON.parse(localStorage.getItem("favorites") || "[]");
-  });
+export default function WordDetail({ selected }) {
+  const [similarWords, setSimilarWords] = useState([]);
+  const [aiSentence, setAiSentence] = useState(null);
+  const [loadingSentence, setLoadingSentence] = useState(false);
 
-  const isFavorite = favorites.includes(item.key);
+  useEffect(() => {
+    if (!selected) return;
 
-  // 初始化 Gemini
-  const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // 清空舊資料
+    setSimilarWords([]);
+    setAiSentence(null);
 
-  // 🧠 隨機例句（離線）
-  function generateRandomExample() {
-    const examples = [
-      `The ${item.key} project inspired many students.`,
-      `Learning about ${item.key} helps us understand word roots.`,
-      `The teacher used ${item.key} to explain how English words are formed.`,
-    ];
-    const random = examples[Math.floor(Math.random() * examples.length)];
-    setAiExample(random);
-  }
+    fetchSimilar(selected.word);
+    fetchSentence(selected.word);
+  }, [selected]);
 
-  // 🤖 Gemini AI 例句
-  async function generateAIExample() {
-    setLoading(true);
+  // =============================
+  // ⭐ 相似單字：DB → GPT fallback
+  // =============================
+  async function fetchSimilar(word) {
     try {
-      const prompt = `請用英文寫一句包含字根 "${item.key}" 的簡單句子，下一行以繁體中文解釋句意。`;
-      const result = await model.generateContent(prompt);
-      const text = result.response.text();
-      setAiExample(text);
-    } catch (error) {
-      console.error(error);
-      setAiExample("⚠️ 無法取得 AI 回應，請稍後再試。");
-    } finally {
-      setLoading(false);
+      // ① 先用 embeddings 版本（資料庫）
+      const dbRes = await fetch("/api/words/similar_db", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+
+      const dbData = await dbRes.json();
+
+      if (!dbData.error && dbData.length > 0) {
+        setSimilarWords(dbData);
+        return;
+      }
+
+      // ② fallback 到 GPT 版本
+      const aiRes = await fetch("/api/words/similar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+
+      const aiData = await aiRes.json();
+
+      if (!aiData.error) setSimilarWords(aiData);
+    } catch (err) {
+      console.error("相似字 API 錯誤：", err);
     }
   }
 
-  // ⭐ 收藏功能
-  function toggleFavorite() {
-    const updated = isFavorite
-      ? favorites.filter((w) => w !== item.key)
-      : [...favorites, item.key];
-    setFavorites(updated);
-    localStorage.setItem("favorites", JSON.stringify(updated));
+  // =============================
+  // ⭐ 例句：GPT → JSON fallback
+  // =============================
+  async function fetchSentence(word) {
+    setLoadingSentence(true);
+
+    try {
+      const res = await fetch("/api/words/sentence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word }),
+      });
+
+      const data = await res.json();
+
+      if (!data.error && data.sentence) {
+        setAiSentence(data);
+      } else {
+        setAiSentence({
+          sentence: `I saw the word ${word} today.`,
+          translation: `我今天看到了 ${word} 這個單字。`,
+        });
+      }
+    } catch (err) {
+      console.error("例句 API 錯誤：", err);
+      setAiSentence({
+        sentence: `I saw the word ${word} today.`,
+        translation: `我今天看到了 ${word} 這個單字。`,
+      });
+    }
+
+    setLoadingSentence(false);
   }
 
+  // =============================
+  // 🔊 TTS
+  // =============================
+  function speak(text) {
+    const msg = new SpeechSynthesisUtterance(text);
+    msg.lang = "en-US";
+    speechSynthesis.speak(msg);
+  }
+
+  if (!selected) return <p>請選擇單字</p>;
+
   return (
-    <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-md animate-fade-in">
-      <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold text-slate-800 mb-2">{item.key}</h2>
+    <div>
+      {/* 單字 + 按鈕 */}
+      <div className="flex items-center gap-3 mb-2">
+        <h2 className="text-3xl font-bold">{selected.word}</h2>
         <button
-          onClick={toggleFavorite}
-          className="text-2xl text-yellow-400 hover:scale-110 transition"
-          title="加入收藏"
+          onClick={() => speak(selected.word)}
+          className="px-3 py-1 text-sm bg-indigo-600 text-white rounded-lg"
         >
-          {isFavorite ? "⭐" : "☆"}
+          🔊 唸單字
         </button>
       </div>
 
-      <p className="text-slate-700 text-lg mb-1">{item.meaning}</p>
-      <p className="text-sm text-slate-500 italic">{item.notes}</p>
+      {/* 基本資訊 */}
+      <p className="text-gray-700 text-lg mb-2">📌 中文：{selected.chinese}</p>
+      <p className="text-gray-700">🏷 詞性：{selected.part_of_speech || "—"}</p>
+      <p className="text-gray-500 mb-4">Level：{selected.level}</p>
 
-      <div className="mt-4">
-        <h3 className="font-semibold text-slate-800">📘 例字：</h3>
-        <ul className="mt-2 list-disc pl-5 text-slate-700">
-          {item.examples.map((ex) => (
-            <li key={ex}>{ex}</li>
-          ))}
-        </ul>
-      </div>
+      {/* ⭐ AI 例句 */}
+      <h3 className="text-xl font-semibold mt-6">📝 AI 例句</h3>
 
-      <div className="mt-4">
-        <h3 className="font-semibold text-slate-800">🌍 延伸單字：</h3>
-        <ul className="mt-2 list-disc pl-5 text-slate-700">
-          {item.related.map((r) => (
-            <li key={r.word}>
-              <strong>{r.word}</strong> — {r.meaning}
-              <div className="text-sm text-slate-500 italic">{r.example}</div>
+      {loadingSentence ? (
+        <p className="text-gray-400 text-sm">(AI 生成中…)</p>
+      ) : aiSentence ? (
+        <>
+          <p className="mt-2">{aiSentence.sentence}</p>
+          <p className="text-gray-600 mb-2">→ {aiSentence.translation}</p>
+          <button
+            onClick={() => speak(aiSentence.sentence)}
+            className="px-3 py-1 bg-green-600 text-white rounded-lg"
+          >
+            🔊 朗讀例句
+          </button>
+        </>
+      ) : (
+        <p className="text-gray-400 text-sm">(尚無例句資料)</p>
+      )}
+
+      {/* ⭐ 相似單字 */}
+      <h3 className="text-xl font-semibold mt-8">🔍 AI 語意相似單字</h3>
+
+      {similarWords.length > 0 ? (
+        <ul className="list-disc ml-5">
+          {similarWords.map((x, i) => (
+            <li key={i} className="mb-1">
+              <span className="font-bold">{x.word}</span>
+              <span className="ml-2 text-gray-600">{x.chinese}</span>
             </li>
           ))}
         </ul>
-      </div>
-
-      <div className="mt-6 text-center space-x-2">
-        <button
-          onClick={generateRandomExample}
-          className="px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 transition"
-        >
-          🎲 隨機例句
-        </button>
-
-        <button
-          onClick={generateAIExample}
-          disabled={loading}
-          className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50"
-        >
-          ✨ {loading ? "AI 正在生成..." : "AI 例句生成"}
-        </button>
-
-        {aiExample && (
-          <p className="mt-3 text-slate-700 italic border-t pt-3 whitespace-pre-line">
-            {aiExample}
-          </p>
-        )}
-      </div>
+      ) : (
+        <p className="text-gray-400 text-sm">(尚無相似單字)</p>
+      )}
     </div>
   );
 }
-
-export default WordDetail;
