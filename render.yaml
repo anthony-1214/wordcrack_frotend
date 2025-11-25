@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: wordcrack_frontend
+    env: static
+    staticPublishPath: dist
+    buildCommand: npm install && npm run build
